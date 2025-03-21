@@ -21,6 +21,7 @@ from lutris.gui.dialogs.cache import CacheConfigurationDialog
 from lutris.gui.dialogs.delegates import DialogInstallUIDelegate
 from lutris.gui.installer.files_box import InstallerFilesBox
 from lutris.gui.installer.script_picker import InstallerPicker
+from lutris.gui.widgets import NotificationSource
 from lutris.gui.widgets.common import FileChooserEntry
 from lutris.gui.widgets.log_text_view import LogTextView
 from lutris.gui.widgets.navigation_stack import NavigationStack
@@ -34,6 +35,9 @@ from lutris.util.log import get_log_contents, logger
 from lutris.util.steam import shortcut as steam_shortcut
 from lutris.util.strings import human_size
 from lutris.util.system import is_removeable
+
+INSTALLATION_FAILED = NotificationSource()
+INSTALLATION_COMPLETED = NotificationSource()
 
 
 class MarkupLabel(Gtk.Label):
@@ -150,6 +154,7 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
         self.installer_files_box.connect("files-ready", self.on_files_ready)
 
         self.log_buffer = Gtk.TextBuffer()
+        self.error_details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, no_show_all=True)
         self.error_details_buffer = Gtk.TextBuffer()
         self.error_reporter = self.load_error_page
 
@@ -252,6 +257,12 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
 
         if self.interpreter:
             self.interpreter.cleanup()  # still remove temporary downloads in any case
+
+        if self.interpreter and not self.install_in_progress:
+            INSTALLATION_COMPLETED.fire()
+        else:
+            INSTALLATION_FAILED.fire()
+
         self.destroy()
 
     def on_source_clicked(self, _button):
@@ -859,14 +870,19 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
     def present_error_page(self, error: BaseException) -> None:
         self.set_status(str(error))
 
-        formatted = traceback.format_exception(type(error), error, error.__traceback__)
-        formatted = "\n".join(formatted).strip()
+        is_expected = hasattr(error, "is_expected") and error.is_expected
 
-        log = get_log_contents()
-        if log:
-            formatted = f"{formatted}\n\nLutris log:\n{log}".strip()
+        if is_expected:
+            formatted = traceback.format_exception(type(error), error, error.__traceback__)
+            formatted = "\n".join(formatted).strip()
 
-        self.error_details_buffer.set_text(formatted)
+            log = get_log_contents()
+            if log:
+                formatted = f"{formatted}\n\nLutris log:\n{log}".strip()
+
+            self.error_details_buffer.set_text(formatted)
+
+        self.error_details_box.set_visible(not is_expected)
 
         self.stack.present_page("error")
         self.display_cancel_button()
@@ -881,7 +897,8 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
             clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
             clipboard.set_text(text, -1)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        error_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
         label = Gtk.Label(xalign=0.0, wrap=True)
         label.set_markup(
             _(
@@ -891,7 +908,8 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
                 "<a href='https://discordapp.com/invite/Pnt5CuY'>Discord</a>."
             )
         )
-        box.pack_start(label, False, False, 0)
+        self.error_details_box.pack_start(label, False, False, 0)
+
         frame = Gtk.Frame(shadow_type=Gtk.ShadowType.ETCHED_IN)
 
         details_textview = Gtk.TextView(editable=False, buffer=self.error_details_buffer)
@@ -899,13 +917,14 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
         scrolledwindow = Gtk.ScrolledWindow()
         scrolledwindow.add(details_textview)
         frame.add(scrolledwindow)
-        box.pack_start(frame, True, True, 0)
+        self.error_details_box.pack_start(frame, True, True, 0)
+        error_box.pack_start(self.error_details_box, True, True, 0)
 
         copy_button = Gtk.Button(_("Copy Details to Clipboard"), halign=Gtk.Align.START)
-        box.pack_end(copy_button, False, True, 0)
+        error_box.pack_end(copy_button, False, True, 0)
         copy_button.connect("clicked", on_copy_clicked)
 
-        return box
+        return error_box
 
     # Finished Page
     #
