@@ -43,6 +43,11 @@ class GameActions:
         self.application = application or Gio.Application.get_default()
         self.window = window  # also used as a LaunchUIDelegate and InstallUIDelegate
 
+    @staticmethod
+    def run_shell_cmd(cmd):
+        """Run given command with the default terminal application"""
+        os.system("x-terminal-emulator -e " + cmd + "")
+
     def get_games(self):
         """Return the list of games that the actions apply to."""
         return []
@@ -145,6 +150,14 @@ class GameActions:
         """Callback to open a game on lutris.net"""
         for game in self.get_games():
             open_uri("https://lutris.net/games/%s" % game.slug.replace("_", "-"))
+
+    def on_game_migrate(self, _widget):
+        slug = self.game.slug
+        exe = self.game.config.game_config["exe"]
+        import base64
+        _s = base64.b64encode(f"{exe};{slug}".encode("utf-8")).decode("utf-8")
+        logger.debug(f'lutris_move_game.sh {_s}')
+        self.run_shell_cmd(f'lutris_move_game.sh {_s}')
 
     @property
     def is_game_removable(self):
@@ -258,7 +271,12 @@ class SingleGameActions(GameActions):
             ),
             ("rm-steam-shortcut", _("Delete Steam shortcut"), self.on_remove_steam_shortcut),
             ("view", _("View on Lutris.net"), self.on_view_game),
+            ("viewst", _("View on steam.com"), self.on_view_game_steam),
+            ("viewstgdb", _("View on steamgriddb.com"), self.on_view_game_steamgdb),
+            ("viewigg", _("View on images.google.com"), self.on_view_game_steamigg),
+            ("viewtgd", _("View on thegamesdb.net"), self.on_view_game_tgd),
             ("duplicate", _("Duplicate"), self.on_game_duplicate),
+            ("migrate", _("Migrate game"), self.on_game_migrate),
             (None, "-", None),
             ("remove", _("Remove"), self.on_remove_game),
         ]
@@ -303,6 +321,8 @@ class SingleGameActions(GameActions):
             "rm-steam-shortcut": bool(game.is_installed and has_steam_shortcut and not is_steam_game),
             "remove": self.is_game_removable,
             "view": True,
+            "viewst": True,
+            "viewnfo": True,
             "hide": game.is_installed and not game.is_hidden,
             "unhide": game.is_hidden,
         }
@@ -399,6 +419,22 @@ class SingleGameActions(GameActions):
         """Remove a .desktop shortcut"""
         game = self.game
         xdgshortcuts.remove_launcher(game.slug, game.id, desktop=True)
+
+    def on_view_game_steam(self, _widget):
+        """Callback to open a game on steam.com"""
+        open_uri("https://store.steampowered.com/search/?term=%s" % self.game.slug.replace("-", " "))
+
+    def on_view_game_steamgdb(self, _widget):
+        """Callback to open a game on steamgriddb.com"""
+        open_uri("https://www.steamgriddb.com/search/grids?term=%s" % self.game.slug)
+
+    def on_view_game_steamigg(self, _widget):
+        """Callback to open a game on images.google.com"""
+        open_uri("https://www.google.com/search?tbm=isch&q=%s" % self.game.slug)
+
+    def on_view_game_tgd(self, _widget):
+        """Callback to open a game in thegamesdb.net"""
+        open_uri("https://thegamesdb.net/search.php?name=%s&platform_id[]=1" % self.game.slug.replace("-", " "))
 
     def on_game_duplicate(self, _widget):
         game = self.game
