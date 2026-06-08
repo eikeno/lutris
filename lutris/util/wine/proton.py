@@ -2,8 +2,10 @@
 
 import json
 import os
+import re
+from collections.abc import Generator
 from gettext import gettext as _
-from typing import Dict, Generator, List, Optional
+from typing import TYPE_CHECKING
 
 from lutris import settings
 from lutris.exceptions import MissingExecutableError
@@ -12,16 +14,60 @@ from lutris.util import cache_single, system
 from lutris.util.steam.config import get_steamapps_dirs
 from lutris.util.strings import get_natural_sort_key
 
+if TYPE_CHECKING:
+    from lutris.game import Game
+
 DEFAULT_GAMEID = "umu-default"
 
+# Matches a umu log line such as
+#   [umu.umu_proton:348] INFO: Downloading GE-Proton10-34.tar.gz...
+_UMU_LOG_LINE_RE = re.compile(r"\[umu\.[\w_]+:\d+\]\s+(?:INFO|WARNING|ERROR):\s+(.+)")
 
-def is_proton_version(version: Optional[str]) -> bool:
+
+class UmuLaunchStatusParser:
+    """Scans umu's stdout for runtime setup progress and pushes it onto a
+    Game's launch_status. The game appears frozen on 'Launching' while umu
+    fetches GE-Proton / the sniper runtime; this surfaces the current step
+    to the UI. MonitoredCommand delivers raw read chunks rather than whole
+    lines, so the parser buffers partial lines across calls."""
+
+    def __init__(self, game: "Game"):
+        self.game = game
+        self._buffer = ""
+
+    def __call__(self, line: str) -> None:
+        # MonitoredCommand delivers raw read chunks, not individual lines,
+        # so this may contain zero, one, or many newlines.
+        data = self._buffer + line
+        lines = data.split("\n")
+        self._buffer = lines[-1]
+        for complete_line in lines[:-1]:
+            self._process_line(complete_line)
+
+    def _process_line(self, line: str) -> None:
+        match = _UMU_LOG_LINE_RE.search(line)
+        if not match:
+            return
+        message = match.group(1).strip()
+        # "Using <Proton>" is logged at the end of umu's setup phase, right
+        # before it hands off to Proton — clear any pending status then.
+        if message.startswith("Using "):
+            self.game.launch_status = ""
+            return
+        # Only the user-meaningful progress messages — skip lock acquisition,
+        # version chatter, env dumps, etc.
+        if message.startswith(("Downloading ", "Extracting ", "Checking updates")):
+            self.game.launch_status = message
+
+
+def is_proton_version(version: str | None) -> bool:
     """True if the version indicated specifies a Proton version of Wine; these
-    require special handling."""
+    require special handling. This does not recognize the special 'ge-proton' version
+    found in configurations; this must be specially  handled elsewhere."""
     return version in get_proton_versions()
 
 
-def is_umu_path(path: Optional[str]) -> bool:
+def is_umu_path(path: str | None) -> bool:
     """True if the path given actually runs Umu; this will run Proton-Wine in turn,
     but can be directed to particular Proton implementation by setting the env-var
     PROTONPATH, but if this is omitted it will default to the latest Proton it
@@ -29,7 +75,7 @@ def is_umu_path(path: Optional[str]) -> bool:
     return bool(path and (path.endswith("/umu_run.py") or path.endswith("/umu-run")))
 
 
-def is_proton_path(wine_path: Optional[str]) -> bool:
+def is_proton_path(wine_path: str | None) -> bool:
     """True if the path given actually runs Umu; this will run Proton-Wine in turn,
     but can be directed to particular Proton implementation by setting the env-var
     PROTONPATH, but if this is omitted it will default to the latest Proton it
@@ -110,13 +156,13 @@ def get_proton_path_by_path(wine_path: str) -> str:
     return version_directory
 
 
-def list_proton_versions() -> List[str]:
+def list_proton_versions() -> list[str]:
     """Return the list of Proton versions installed in Steam, in sorted order."""
     return sorted(get_proton_versions().keys(), key=get_natural_sort_key, reverse=True)
 
 
 @cache_single
-def get_proton_versions() -> Dict[str, str]:
+def get_proton_versions() -> dict[str, str]:
     """Return the dict of Proton versions installed in Steam, which is cached.
     The keys are the versions, and the values are the paths to those versions,
     which are their wine-paths."""
@@ -153,7 +199,7 @@ def _iter_proton_locations() -> Generator[str, None, None]:
         yield path
 
 
-def update_proton_env(wine_path: str, env: Dict[str, str], game_id: str = DEFAULT_GAMEID, umu_log: str = "") -> None:
+def update_proton_env(wine_path: str, env: dict[str, str], game_id: str = DEFAULT_GAMEID, umu_log: str = "") -> None:
     """Add various env-vars to an 'env' dict for use by Proton and Umu; this won't replace env-vars, so they can still
     be pre-set before we get here. This sets the PROTONPATH so the Umu launcher will know what Proton to use,
     and the WINEARCH to win64, which is what we expect Proton to always be. GAMEID is required, but we'll use a default

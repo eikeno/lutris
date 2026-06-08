@@ -10,12 +10,10 @@ GitHub Release
 --------------
 - Draft new release: https://github.com/lutris/lutris/releases/new
 - Copy changelog to release notes
-- Close the milestone
 
-Build & Upload
---------------
-- ``make build-source``
-- ``make upload``
+Launchpad PPA
+-------------
+- Check the Github action has uploaded the debs to the PPA
 
 Website
 -------

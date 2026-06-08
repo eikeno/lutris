@@ -4,16 +4,16 @@ import hashlib
 import os
 import re
 import shutil
-import signal
 import stat
 import string
 import subprocess
 import zipfile
+from collections.abc import Iterable, Mapping, Sequence
 from gettext import gettext as _
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import IO
 
-from gi.repository import Gio, GLib  # type: ignore
+from gi.repository import Gio, GLib
 
 from lutris import settings
 from lutris.exceptions import MissingExecutableError
@@ -27,25 +27,24 @@ PROTECTED_HOME_FOLDERS = (
     _("Desktop"),
     _("Pictures"),
     _("Videos"),
-    _("Pictures"),
     _("Projects"),
     _("Games"),
 )
 
 
-def get_environment():
+def get_environment() -> dict[str, str]:
     """Return a safe to use copy of the system's environment.
     Values starting with BASH_FUNC can cause issues when written in a text file."""
     return {key: value for key, value in os.environ.items() if not key.startswith("BASH_FUNC")}
 
 
 def execute(
-    command: List[str],
-    env: Optional[Dict[str, str]] = None,
-    cwd: Optional[str] = None,
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
     quiet: bool = False,
     shell: bool = False,
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> str:
     """
     Execute a system command and return its standard output; standard error is discarded.
@@ -65,13 +64,13 @@ def execute(
 
 
 def execute_with_error(
-    command: List[str],
-    env: Optional[Dict[str, str]] = None,
-    cwd: Optional[str] = None,
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
     quiet: bool = False,
     shell: bool = False,
-    timeout: Optional[float] = None,
-) -> Tuple[str, str]:
+    timeout: float | None = None,
+) -> tuple[str, str]:
     """
     Execute a system command and return its standard output and; standard error in a tuple.
 
@@ -89,14 +88,14 @@ def execute_with_error(
 
 
 def _execute(
-    command: List[str],
-    env: Optional[Dict[str, str]] = None,
-    cwd: Optional[str] = None,
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
     capture_stderr: bool = False,
     quiet: bool = False,
     shell: bool = False,
-    timeout: Optional[float] = None,
-) -> Tuple[str, str]:
+    timeout: float | None = None,
+) -> tuple[str, str]:
     # Check if the executable exists
     if not command:
         logger.error("No executable provided!")
@@ -139,7 +138,13 @@ def _execute(
     return stdout.strip(), (stderr or "").strip()
 
 
-def spawn(command, env=None, cwd=None, quiet=False, shell=False):
+def spawn(
+    command: Sequence[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    quiet: bool = False,
+    shell: bool = False,
+) -> None:
     """
     Execute a system command but discard its results and do not wait
     for it to complete.
@@ -180,7 +185,9 @@ def spawn(command, env=None, cwd=None, quiet=False, shell=False):
         logger.error("Could not run command %s (env: %s): %s", command, env, ex)
 
 
-def read_process_output(command, timeout=5, env=None, error_result=""):
+def read_process_output(
+    command: Sequence[str], timeout: int = 5, env: Mapping[str, str] | None = None, error_result: str | None = ""
+) -> str:
     """Return the output of a command as a string; if 'error_result' is not None,
     returns that on errors. If it is, raises an exception instead."""
     try:
@@ -192,7 +199,7 @@ def read_process_output(command, timeout=5, env=None, error_result=""):
         return error_result
 
 
-def get_md5_in_zip(filename):
+def get_md5_in_zip(filename: str) -> str:
     """Return the md5 hash of a file in a zip"""
     with zipfile.ZipFile(filename, "r") as archive:
         files = archive.namelist()
@@ -203,7 +210,7 @@ def get_md5_in_zip(filename):
     return _hash
 
 
-def get_md5_hash(filename):
+def get_md5_hash(filename: str) -> bool | str:
     """Return the md5 hash of a file."""
     try:
         with open(filename, "rb") as _file:
@@ -214,14 +221,14 @@ def get_md5_hash(filename):
     return _hash
 
 
-def read_file_md5(filedesc):
+def read_file_md5(filedesc: IO[bytes]) -> str:
     md5 = hashlib.md5()
     for chunk in iter(lambda: filedesc.read(8192), b""):
         md5.update(chunk)
     return md5.hexdigest()
 
 
-def get_file_checksum(filename, hash_type):
+def get_file_checksum(filename: str, hash_type: str) -> str:
     """Return the checksum of type `hash_type` for a given filename"""
     hasher = hashlib.new(hash_type)
     with open(filename, "rb") as input_file:
@@ -230,12 +237,12 @@ def get_file_checksum(filename, hash_type):
     return hasher.hexdigest()
 
 
-def is_executable(exec_path):
+def is_executable(exec_path: str) -> bool:
     """Return whether exec_path is an executable"""
     return os.access(exec_path, os.X_OK)
 
 
-def make_executable(exec_path):
+def make_executable(exec_path: str) -> None:
     file_stats = os.stat(exec_path)
     os.chmod(exec_path, file_stats.st_mode | stat.S_IEXEC)
 
@@ -247,10 +254,20 @@ def can_find_executable(exec_name: str) -> bool:
     return bool(find_executable(exec_name))
 
 
-def find_executable(exec_name: str) -> Optional[str]:
+def find_executable(exec_name: str) -> str | None:
     """Return the absolute path of an executable, or None if
     it could not be found."""
-    return shutil.which(exec_name) if exec_name else None
+    if not exec_name:
+        return None
+    path = shutil.which(exec_name)
+    if path and os.path.exists(path):
+        return path
+    # In Flatpak, shutil.which may return paths under /usr/bin that
+    # don't actually exist; the real binary is in /app/bin.
+    app_path = os.path.join("/app/bin", exec_name)
+    if os.path.exists(app_path):
+        return app_path
+    return path
 
 
 def find_required_executable(exec_name: str) -> str:
@@ -262,7 +279,7 @@ def find_required_executable(exec_name: str) -> str:
     return exe
 
 
-def get_pid(program, multiple=False):
+def get_pid(program: str, multiple: bool = False) -> str | list[str] | None:
     """Return pid of process.
 
     :param str program: Name of the process.
@@ -271,37 +288,47 @@ def get_pid(program, multiple=False):
     """
     pids = execute(["pgrep", program])
     if not pids.strip():
-        return
+        return None
     pids = pids.split()
     if multiple:
         return pids
     return pids[0]
 
 
-def kill_pid(pid):
-    """Terminate a process referenced by its PID"""
+def is_process_running(pattern: str, filter_string: str | None = None) -> bool:
+    """Check if a process matching a pattern is running.
+
+    Uses pgrep -f to match against the full command line.
+
+    Args:
+        pattern: String to match against the full command line.
+            Regex metacharacters are escaped automatically.
+        filter_string: If provided, only return True if this string
+            also appears in the matching process's command line.
+            Useful for filtering by wine prefix path.
+    """
+    pattern = re.escape(pattern)
     try:
-        pid = int(pid)
-    except ValueError:
-        logger.error("Invalid pid %s")
-        return
-    logger.info("Killing PID %s", pid)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        logger.error("Could not kill process %s", pid)
+        result = subprocess.run(["pgrep", "-a", "-f", pattern], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    if result.returncode != 0:
+        return False
+    if not filter_string:
+        return True
+    return any(filter_string in line for line in result.stdout.splitlines())
 
 
-def python_identifier(unsafe_string: str):
+def python_identifier(unsafe_string: str) -> str:
     """Converts a string to something that can be used as a python variable"""
 
-    def _dashrepl(matchobj):
+    def _dashrepl(matchobj: re.Match[str]) -> str:
         return matchobj.group(0).replace("-", "_")
 
     return re.sub(r"(\${)([\w-]*)(})", _dashrepl, unsafe_string)
 
 
-def substitute(string_template: str, variables):
+def substitute(string_template: str, variables: dict[str, str]) -> str:
     """Expand variables on a string template
 
     Args:
@@ -327,7 +354,7 @@ def substitute(string_template: str, variables):
     return template.safe_substitute(variables)
 
 
-def merge_folders(source, destination):
+def merge_folders(source: str, destination: str) -> None:
     """Merges the content of source to destination"""
     logger.debug("Merging %s into %s", source, destination)
     # We do not use shutil.copytree() here because that would copy
@@ -352,12 +379,13 @@ def merge_folders(source, destination):
 
 def remove_folder(
     path: str,
-    completion_function: Optional[TrashPortal.CompletionFunction] = None,
-    error_function: Optional[TrashPortal.ErrorFunction] = None,
+    completion_function: TrashPortal.CompletionFunction | None = None,
+    error_function: TrashPortal.ErrorFunction | None = None,
 ) -> None:
-    """Trashes a folder specified by path, asynchronously. The folder
-    likely exists after this returns, since it's using DBus to ask
-    for the entrashification.
+    """Trashes a folder specified by path. When a GLib main loop is running
+    (GUI mode) this operates asynchronously via the Trash portal. When no
+    main loop is running (CLI mode) this iterates the GLib main context
+    until the trash operation completes, so the folder is gone on return.
     """
     if not os.path.exists(path):
         logger.warning("Non existent path: %s", path)
@@ -369,11 +397,33 @@ def remove_folder(
             error_function(RuntimeError("Lutris tried to trash home directory!"))
         return
 
-    logger.debug("Trashing folder %s", path)
-    TrashPortal([path], completion_function=completion_function, error_function=error_function)
+    if GLib.main_depth() > 0:
+        logger.debug("Trashing folder %s", path)
+        TrashPortal([path], completion_function=completion_function, error_function=error_function)
+    else:
+        from lutris.util.jobs import run_until_complete
+
+        logger.debug("Trashing folder %s (sync)", path)
+
+        def _start_trash(
+            completion_function: TrashPortal.CompletionFunction | None = None,
+            error_function: TrashPortal.ErrorFunction | None = None,
+        ) -> None:
+            TrashPortal([path], completion_function=completion_function, error_function=error_function)
+
+        try:
+            run_until_complete(_start_trash)
+        except Exception as ex:
+            if error_function:
+                error_function(ex)
+            else:
+                raise
+        else:
+            if completion_function:
+                completion_function()
 
 
-def delete_folder(path):
+def delete_folder(path: str) -> bool:
     """Delete a folder specified by path immediately. The folder will not
     be recoverable, so consider remove_folder() instead.
 
@@ -393,16 +443,16 @@ def delete_folder(path):
     return True
 
 
-def create_folder(path):
+def create_folder(path: str) -> str | None:
     """Creates a folder specified by path"""
     if not path:
-        return
+        return None
     path = os.path.expanduser(path)
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def list_unique_folders(folders):
+def list_unique_folders(folders: Iterable[str]) -> Iterable[str]:
     """Deduplicate directories with the same Device.Inode"""
     unique_dirs = {}
     for folder in folders:
@@ -413,7 +463,7 @@ def list_unique_folders(folders):
     return unique_dirs.values()
 
 
-def is_removeable(path, system_config):
+def is_removeable(path: str, system_config: dict[str, str]) -> bool:
     """Check if a folder is safe to remove (not system or home, ...). This needs the
     system config dict so it can check the default game path, too."""
     if not path_exists(path):
@@ -426,10 +476,14 @@ def is_removeable(path, system_config):
 
     if parts[0] == "var":
         # Fedora Silverblue puts mount points under /var since they are mutable
-        # so we'll special case /var/mnt/<drive>/*.
+        # so we'll special case /var/mnt/<drive>/* and /var/media/<drive>/*,
+        # and /var/home/<user>/* (since /home is a symlink to /var/home).
         if len(parts) > 3 and parts[1] in ("mnt", "media"):
             return True
-        return False
+        if len(parts) > 1 and parts[1] == "home":
+            parts = parts[1:]
+        else:
+            return False
 
     if parts[0] in ("usr", "lib", "etc", "boot", "sbin", "bin"):
         # Path is part of the system folders
@@ -449,7 +503,7 @@ def is_removeable(path, system_config):
     return True
 
 
-def fix_path_case(path):
+def fix_path_case(path: str) -> str:
     """Do a case-insensitive check, return the real path with correct case. If the path is
     not for a real file, this corrects as many components as do exist."""
     if not path or os.path.exists(path) or not path.startswith("/"):
@@ -478,7 +532,7 @@ def fix_path_case(path):
     return path
 
 
-def get_pids_using_file(path):
+def get_pids_using_file(path: str) -> set[str]:
     """Return a set of pids using file `path`."""
     if not os.path.exists(path):
         logger.error("Can't return PIDs using non existing file: %s", path)
@@ -492,7 +546,7 @@ def get_pids_using_file(path):
     return set(fuser_output.split())
 
 
-def reverse_expanduser(path):
+def reverse_expanduser(path: str) -> str:
     """Replace '/home/username' with '~' in given path."""
     if not path:
         return path
@@ -503,7 +557,7 @@ def reverse_expanduser(path):
     return path
 
 
-def path_contains(parent, child, resolve_symlinks=False) -> bool:
+def path_contains(parent: str | None, child: str | None, resolve_symlinks: bool = False) -> bool:
     """Tests if a child path is actually within a parent directory
     or a subdirectory of it. Resolves relative paths, and ~, and
     optionally symlinks."""
@@ -521,7 +575,7 @@ def path_contains(parent, child, resolve_symlinks=False) -> bool:
     return resolved_child == resolved_parent or resolved_parent in resolved_child.parents
 
 
-def path_exists(path: str, check_symlinks: bool = False, exclude_empty: bool = False) -> bool:
+def path_exists(path: str | None, check_symlinks: bool = False, exclude_empty: bool = False) -> bool:
     """Wrapper around system.path_exists that doesn't crash with empty values
 
     Params:
@@ -543,7 +597,7 @@ def path_exists(path: str, check_symlinks: bool = False, exclude_empty: bool = F
     return False
 
 
-def create_symlink(source: str, destination: str):
+def create_symlink(source: str, destination: str) -> None:
     """Create a symlink from source to destination.
     If there is already a symlink at the destination and it is broken, it will be deleted."""
     is_directory = os.path.isdir(source)
@@ -556,7 +610,7 @@ def create_symlink(source: str, destination: str):
         logger.error("Failed linking %s to %s", source, destination)
 
 
-def reset_library_preloads():
+def reset_library_preloads() -> None:
     """Remove library preloads from environment"""
     for key in ("LD_LIBRARY_PATH", "LD_PRELOAD"):
         if os.environ.get(key):
@@ -566,7 +620,7 @@ def reset_library_preloads():
                 logger.error("Failed to delete environment variable %s", key)
 
 
-def get_existing_parent(path):
+def get_existing_parent(path: str) -> str | None:
     """Return the 1st existing parent for a folder (or itself if the path
     exists and is a directory). returns None, when none of the parents exists.
     """
@@ -577,7 +631,7 @@ def get_existing_parent(path):
     return get_existing_parent(os.path.dirname(path))
 
 
-def update_desktop_icons():
+def update_desktop_icons() -> None:
     """Update Icon for GTK+ desktop manager
     Other desktop manager icon cache commands must be added here if needed
     """
@@ -589,7 +643,7 @@ def update_desktop_icons():
 def get_disk_size(path: str) -> int:
     """Return the disk size in bytes of a file or folder"""
 
-    def get_file_size(file_path):
+    def get_file_size(file_path: str) -> int:
         return os.stat(file_path).st_size
 
     if os.path.isfile(path):
@@ -602,7 +656,7 @@ def get_disk_size(path: str) -> int:
     return total_size
 
 
-def get_locale_list():
+def get_locale_list() -> list[str]:
     """Return list of available locales"""
     try:
         with subprocess.Popen(["locale", "-a"], stdout=subprocess.PIPE) as locale_getter:
@@ -617,12 +671,12 @@ def get_locale_list():
     return locales
 
 
-def get_running_pid_list():
+def get_running_pid_list() -> list[int]:
     """Return the list of PIDs from processes currently running"""
     return [int(p) for p in os.listdir("/proc") if p[0].isdigit()]
 
 
-def get_mounted_discs():
+def get_mounted_discs() -> list[str | None]:
     """Return a list of mounted discs and ISOs
 
     :rtype: list of Gio.Mount
@@ -631,8 +685,9 @@ def get_mounted_discs():
     drives = []
 
     for mount in volumes.get_mounts():
-        if mount.get_volume():
-            device = mount.get_volume().get_identifier("unix-device")
+        volume = mount.get_volume()
+        if volume:
+            device = volume.get_identifier("unix-device")
             if not device:
                 logger.debug("No device for mount %s", mount.get_name())
                 continue
@@ -643,7 +698,7 @@ def get_mounted_discs():
     return drives
 
 
-def find_mount_point(path):
+def find_mount_point(path: str) -> str:
     """Return the mount point a file is located on"""
     path = os.path.abspath(path)
     while not os.path.ismount(path):
@@ -651,7 +706,7 @@ def find_mount_point(path):
     return path
 
 
-def set_keyboard_layout(layout):
+def set_keyboard_layout(layout: str) -> None:
     setxkbmap_command = ["setxkbmap", "-model", "pc101", layout, "-print"]
     xkbcomp_command = ["xkbcomp", "-", os.environ.get("DISPLAY", ":0")]
     with subprocess.Popen(xkbcomp_command, stdin=subprocess.PIPE) as xkbcomp:

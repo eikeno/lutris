@@ -10,7 +10,7 @@ from lutris.config import LutrisConfig
 from lutris.database.games import get_game_by_field
 from lutris.exceptions import AuthenticationError, MisconfigurationError, UnavailableGameError
 from lutris.gui.dialogs.delegates import Delegate
-from lutris.installer import AUTO_EXE_PREFIX
+from lutris.installer import get_entry_point_path
 from lutris.installer.commands import CommandsMixin
 from lutris.installer.errors import MissingGameDependencyError, ScriptingError
 from lutris.installer.installer import LutrisInstaller
@@ -57,6 +57,10 @@ class ScriptInterpreter(GObject.Object, CommandsMixin):
             """Called to prompt the user to select among a list of options. When the user
             does so, the callback is invoked. The method returns immediately, however."""
             raise NotImplementedError()
+
+        def report_progress(self, fraction, text=""):
+            """Called to report numeric progress (0.0 to 1.0) during installation.
+            If fraction is None, hides the progress bar."""
 
         def report_finished(self, game_id, status):
             """Called to report the successful completion of the installation."""
@@ -294,6 +298,9 @@ class ScriptInterpreter(GObject.Object, CommandsMixin):
 
         os.makedirs(self.cache_path, exist_ok=True)
 
+        # Mark cached files as being installed
+        self._update_cache_locks_state("installing")
+
         self._iter_commands()
 
     def _iter_commands(self, result=None, exception=None):
@@ -365,27 +372,64 @@ class ScriptInterpreter(GObject.Object, CommandsMixin):
         return getattr(self, command_name), command_params
 
     def _finish_install(self):
-        game_id = self.installer.save()
-        path = None
+        game_id, game_config = self.installer.save()
 
-        if path and AUTO_EXE_PREFIX not in path and not os.path.isfile(path) and self.installer.runner != "web":
+        # Mark cached files as successfully installed so cleanup can remove them
+        self._update_cache_locks_state("installed")
+
+        # Check that the game's executable can actually be found
+        exe_path = get_entry_point_path(game_config.get("game", {})) if game_config else ""
+
+        if exe_path and not os.path.isfile(exe_path) and self.installer.runner != "web":
             status = (
                 _(
                     "The executable at path %s can't be found, please check the destination folder.\n"
                     "Some parts of the installation process may have not completed successfully."
                 )
-                % path
+                % exe_path
             )
-            logger.warning("No executable found at specified location %s", path)
+            logger.warning("No executable found at specified location %s", exe_path)
         else:
             status = self.installer.script.get("install_complete_text") or _("Installation completed!")
         AsyncCall(download_lutris_media, None, self.installer.game_slug)
         self.interpreter_ui_delegate.report_finished(game_id, status)
 
     def cleanup(self):
-        """Clean up install dir after a successful install"""
+        """Clean up install dir after a successful install.
+
+        Uses cache-aware deletion that preserves downloaded files
+        if installation hasn't completed successfully. This prevents
+        re-downloading large game files after failed installations.
+        """
         os.chdir(os.path.expanduser("~"))
-        system.delete_folder(self.cache_path)
+        from lutris.util.download_cache import safe_delete_folder
+
+        safe_delete_folder(self.cache_path)
+
+    def _update_cache_locks_state(self, state_name: str) -> None:
+        """Update cache lock state for all files in the cache directory.
+
+        Args:
+            state_name: One of 'downloading', 'downloaded', 'installing',
+                       'installed', 'failed'.
+        """
+        from lutris.util.download_cache import CacheState, update_cache_lock
+
+        try:
+            state = CacheState(state_name)
+        except ValueError:
+            logger.warning("Invalid cache state: %s", state_name)
+            return
+
+        if not os.path.isdir(self.cache_path):
+            return
+
+        for root, _dirs, files in os.walk(self.cache_path):
+            for name in files:
+                if name.endswith((".cache_lock", ".tmp")):
+                    continue
+                file_path = os.path.join(root, name)
+                update_cache_lock(file_path, state)
 
     def revert(self, remove_game_dir=True, completion_function=None, error_function=None):
         """Revert installation in case of an error. Since winekill can be slow,
@@ -394,6 +438,9 @@ class ScriptInterpreter(GObject.Object, CommandsMixin):
         logger.info("Cancelling installation of %s", self.installer.game_name)
 
         self.cancelled = True
+
+        # Mark cached files as failed so they're preserved for retry
+        self._update_cache_locks_state("failed")
 
         def on_complete(_result, error):
             if error:

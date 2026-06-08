@@ -28,7 +28,7 @@ def is_running():
 class steam(Runner):
     description = _("Runs Steam for Linux games")
     human_name = _("Steam")
-    platforms = [_("Linux")]
+    platform_dict = Runner.to_platform_dict([_("Linux")])
     runner_executable = "steam"
     flatpak_id = "com.valvesoftware.Steam"
     game_options = [
@@ -134,13 +134,21 @@ class steam(Runner):
         return system.find_required_executable(self.runner_executable)
 
     @property
+    def has_working_dir(self) -> bool:
+        return bool(self._get_steamless_working_dir() or super().has_working_dir)
+
+    @property
     def working_dir(self):
+        """Return the working directory to use when running the game."""
+        return self._get_steamless_working_dir() or super().working_dir
+
+    def _get_steamless_working_dir(self) -> str | None:
         """Return the working directory to use when running the game."""
         if self.game_config.get("run_without_steam"):
             steamless_binary = self.game_config.get("steamless_binary")
             if steamless_binary and os.path.isfile(steamless_binary):
                 return os.path.dirname(steamless_binary)
-        return super().working_dir
+        return None
 
     @property
     def launch_args(self):

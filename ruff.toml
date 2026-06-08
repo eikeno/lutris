@@ -11,14 +11,11 @@ ignore = [
     "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
     "PERF401", # Use a list comprehension to create a transformed list
     "RUF100", # [*] Unused `noqa` directive (non-enabled: `C901`) - unused pylint/noqa directives that should be removed
-    "RUF013", # PEP 484 prohibits implicit `Optional`
     "PERF203", # `try`-`except` within a loop incurs performance overhead
     "RUF015", #  Prefer `next(...)` over single element slice - opinionated, but some cases could be changed
     "PERF102",# When using only the values of a dict use the `values()` method
-    "B011", # Do not `assert False` (`python -O` removes these calls), raise `AssertionError()`
     "RUF005", # Consider iterable unpacking instead of concatenation
     "A003", # Class attribute `id` is shadowing a Python builtin
-    "B024", # `DiscordRichPresenceBase` is an abstract base class, but it has no abstract methods
     "B905", # `zip()` without an explicit `strict=` parameter
     "ARG002", # Unused method argument: `mock_path_exists`
     "E722", # Do not use bare `except`

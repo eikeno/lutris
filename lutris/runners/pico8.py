@@ -21,7 +21,7 @@ class pico8(Runner):
     description = _("Runs PICO-8 fantasy console cartridges")
     multiple_versions = False
     human_name = _("PICO-8")
-    platforms = [_("PICO-8")]
+    platform_dict = Runner.to_platform_dict([_("PICO-8")])
     game_options = [
         {
             "option": "main_file",
@@ -201,7 +201,7 @@ class pico8(Runner):
         launch_info = {}
         launch_info["env"] = self.get_env(os_env=False)
 
-        game_data = get_game_by_field(self.config.game_config_id, "configpath")
+        game_data = get_game_by_field(self.config.game_config_id, "configpath") or {}
 
         command = self.launch_args
 

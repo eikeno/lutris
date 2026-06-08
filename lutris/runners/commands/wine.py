@@ -1,10 +1,12 @@
 """Wine commands for installers"""
 
 # pylint: disable=too-many-arguments
+
 import os
 import shlex
 import time
-from typing import Dict, Optional, Tuple
+from gettext import gettext as _
+from typing import TYPE_CHECKING, cast
 
 from lutris import runtime, settings
 from lutris.config import LutrisConfig
@@ -27,6 +29,9 @@ from lutris.util.wine.wine import (
     is_installed_systemwide,
     is_prefix_directory,
 )
+
+if TYPE_CHECKING:
+    from lutris.runners.wine import wine
 
 
 def set_regedit(
@@ -97,6 +102,28 @@ def delete_registry_key(key, wine_path=None, prefix=None, arch=WINE_DEFAULT_ARCH
     )
 
 
+def is_disallowed_fs(prefix):
+    """
+    Check prefix is create in file system that not support to create linux symlink
+
+    Returns:
+        bool: True if the prefix is on a disallowed filesystem or if the filesystem
+              type cannot be determined, False otherwise.
+    """
+
+    # Need add more if needed
+    disallowed_fs_types = {"exfat", "fat", "vfat", "msdos", "umsdos", "ncpfs", "iso9660"}
+
+    if not os.path.exists(prefix):
+        prefix = os.path.dirname(prefix)
+
+    fs_type = linux.LinuxSystem().get_fs_type_for_path(prefix)
+    if fs_type is None:
+        return True
+    logger.info("Creating a prefix in file system type: %s", fs_type)
+    return fs_type in disallowed_fs_types
+
+
 def create_prefix(
     prefix, wine_path=None, arch=WINE_DEFAULT_ARCH, overrides=None, install_gecko=None, install_mono=None, runner=None
 ):
@@ -114,6 +141,29 @@ def create_prefix(
 
     if not runner:
         runner = import_runner("wine")(prefix=prefix, wine_arch=arch)
+
+    # Wine does not allow creating a prefix in a parent directory that does not
+    # exist. For example, if the prefix is /mnt/a/b/c/d but the parent directory
+    # /mnt/a/b/c does not exist, it is not allowed.
+    if not os.path.exists(os.path.dirname(prefix)):
+        raise RuntimeError(_("Can't create prefix: Directory '%s' not found.") % os.path.dirname(prefix))
+
+    if not os.path.exists(prefix):
+        _stat = os.lstat(os.path.dirname(prefix))
+    else:
+        _stat = os.lstat(prefix)
+    # Wine not allow to create prefix that not owned by user
+    if _stat.st_uid != os.getuid() or _stat.st_mode & 0o700 != 0o700:
+        raise RuntimeError(
+            _(
+                "'%s' must be owned by you, with full owner permissions. "
+                + "Refusing to create a configuration directory there."
+            )
+            % prefix
+        )
+
+    if is_disallowed_fs(prefix):
+        raise RuntimeError(_("Can't create the prefix on a file system that does not support Linux symbolic links."))
 
     if not wine_path:
         wine_path = runner.get_executable()
@@ -150,9 +200,10 @@ def create_prefix(
 
         proton.update_proton_env(wine_path, wineenv)
 
-        command = MonitoredCommand([proton.get_umu_path(), "createprefix"], env=wineenv)
-        command.start()
+        umu_command = MonitoredCommand([proton.get_umu_path(), "createprefix"], env=wineenv)
+        umu_command.start()
     else:
+        umu_command = None
         wineboot_path = os.path.join(os.path.dirname(wine_path), "wineboot")
         if not system.path_exists(wineboot_path):
             logger.error(
@@ -171,6 +222,10 @@ def create_prefix(
             and system.path_exists(os.path.join(prefix, "system.reg"))
         ):
             break
+        # Check if umu crashed before prefix was created
+        if umu_command and not umu_command.is_running:
+            logger.error("Umu exited unexpectedly during prefix creation (return code: %s)", umu_command.return_code)
+            return
         if loop_index == 60:
             logger.warning("Wine prefix creation is taking longer than expected...")
     if not os.path.exists(os.path.join(prefix, "user.reg")):
@@ -246,19 +301,19 @@ def wineexec(
     executable: str,
     prefix: str,
     args: str = "",
-    wine_path: Optional[str] = None,
+    wine_path: str | None = None,
     arch: str = WINE_DEFAULT_ARCH,
-    working_dir: Optional[str] = None,
+    working_dir: str | None = None,
     winetricks_wine: str = "",
     blocking: bool = False,
-    config: Optional[LutrisConfig] = None,
-    include_processes: Optional[list] = None,
-    exclude_processes: Optional[list] = None,
+    config: LutrisConfig | None = None,
+    include_processes: list | None = None,
+    exclude_processes: list | None = None,
     disable_runtime: bool = False,
-    env: Optional[dict] = None,
+    env: dict | None = None,
     overrides=None,
-    runner=None,
-    proton_verb: Optional[str] = None,
+    runner: "wine | None" = None,
+    proton_verb: str | None = None,
 ):
     """
     Execute a Wine command.
@@ -290,7 +345,7 @@ def wineexec(
         exclude_processes = shlex.split(exclude_processes)
 
     if not runner:
-        runner = import_runner("wine")(prefix=prefix, working_dir=working_dir, wine_arch=arch)
+        runner = cast(type["wine"], import_runner("wine"))(prefix=prefix, working_dir=working_dir, wine_arch=arch)
 
     if not wine_path:
         wine_path = runner.get_executable()
@@ -389,8 +444,8 @@ def wineexec(
 
 
 def find_winetricks(
-    env: Optional[dict[str, str]] = None, system_winetricks: bool = False
-) -> Tuple[str, Optional[str], Dict[str, str]]:
+    env: dict[str, str] | None = None, system_winetricks: bool = False
+) -> tuple[str, str | None, dict[str, str]]:
     """Find winetricks path."""
     env = env or {}
     winetricks_path = os.path.join(settings.RUNTIME_DIR, "winetricks/winetricks")
@@ -410,11 +465,11 @@ def find_winetricks(
 
 
 def winetricks(
-    app: Optional[str],
+    app: str | None,
     prefix: str,
     arch: str = WINE_DEFAULT_ARCH,
     silent: bool = True,
-    wine_path: Optional[str] = None,
+    wine_path: str | None = None,
     config=None,
     env=None,
     disable_runtime=False,
@@ -522,7 +577,7 @@ def install_cab_component(cabfile, component, wine_path: str, prefix=None, arch=
 
 
 def open_wine_terminal(
-    terminal: Optional[str], wine_path: str, prefix: str, env: Optional[Dict[str, str]], system_winetricks: bool
+    terminal: str | None, wine_path: str, prefix: str, env: dict[str, str] | None, system_winetricks: bool
 ):
     winetricks_path, _working_dir, env = find_winetricks(env, system_winetricks)
     path_paths = [os.path.dirname(wine_path)]

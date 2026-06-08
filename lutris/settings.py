@@ -4,6 +4,8 @@ import json
 import os
 import sys
 from gettext import gettext as _
+from tempfile import TemporaryDirectory
+from typing import cast
 
 from gi.repository import GLib
 
@@ -41,10 +43,15 @@ COVERART_PATH = os.path.join(DATA_DIR, "coverart")
 RUNTIME_VERSIONS_PATH = os.path.join(CACHE_DIR, "versions.json")
 ICON_PATH = os.path.join(GLib.get_user_data_dir(), "icons", "hicolor", "128x128", "apps")
 
-if "nosetests" in sys.argv[0] or "nose2" in sys.argv[0] or "pytest" in sys.argv[0]:
-    DB_PATH = "/tmp/pga.db"
-else:
-    DB_PATH = sio.read_setting("pga_path") or os.path.join(DATA_DIR, "pga.db")
+DB_PATH = sio.read_setting("pga_path") or os.path.join(DATA_DIR, "pga.db")
+
+TEST_TEMP_DIR = TemporaryDirectory()
+test_modules = ["unittest", "nosetests", "nose2", "nose", "pytest"]
+for test_module in test_modules:
+    if test_module in sys.modules.keys():
+        DB_PATH = os.path.join(TEST_TEMP_DIR.name, "pga.db")
+        break
+
 
 SITE_URL = sio.read_setting("website") or "https://lutris.net"
 
@@ -71,7 +78,7 @@ write_setting = sio.write_setting
 SETTINGS_CHANGED = sio.SETTINGS_CHANGED
 
 
-def get_lutris_directory_settings(directory):
+def get_lutris_directory_settings(directory: str) -> dict[str, str]:
     """Reads the 'lutris.json' file in 'directory' and returns it as
     a (new) dictionary. The file is missing, unreadable, unparseable, or not a dict,
     this returns an empty dict instead."""
@@ -83,13 +90,13 @@ def get_lutris_directory_settings(directory):
                     json_data = json.load(f)
                     if not isinstance(json_data, dict):
                         logger.error("'%s' does not contain a dict, and will be ignored.", path)
-                    return json_data
+                    return cast(dict[str, str], json_data)
         except Exception as ex:
             logger.exception("Failed to read '%s': %s", path, ex)
     return {}
 
 
-def set_lutris_directory_settings(directory, settings, merge=True):
+def set_lutris_directory_settings(directory: str, settings: dict[str, str], merge: bool = True) -> bool:
     """Updates the 'lutris.json' file in the 'directory' given. If it does not exist, this method creates it. By
     default, if it does exist this merges the values of settings into it, but in a shallow way - only the top level
     entries are merged, not the content any of any sub-dictionaries. If 'merge' is False, this replaces the existing
